@@ -1,0 +1,243 @@
+---
+title: "honors"
+output: html_document
+date: "2024-06-20"
+---
+
+# Library
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(nnet)
+library(moonBook)
+library(ztable)
+```
+
+# Data Preparation
+
+```{r}
+# Read the dataset
+data = read.csv("dataforregression.csv", fileEncoding = "UTF-8")
+```
+
+# Data Processing
+
+```{r}
+# remove unnecessary columns
+
+data = data[, -1]  # Remove the first column
+data = data[, -2]  # Remove the second column
+data = data[, -2]  # Remove the third column (was originally the fourth)
+
+```
+```{r}
+data$Subject_Equal <- tolower(data$Subject_Equal)
+data$entailment <- tolower(data$entailment)
+# Replace values in the 'eco' column if they are not one of the specified values
+data <- data %>%
+  mutate(eco = ifelse(!(eco %in% c("없음", "양태", "부정", "조건", "의문")), "2개", eco))
+# Remove rows where 'entailment' is 'neutral'
+data <- data %>%
+  filter(entailment != "neutral")
+data <- data %>%
+  mutate(entailment = ifelse(entailment == "contradict", "contradiction", entailment))
+```
+
+```{r}
+# Define functions to map categorical variables to numeric values
+fun1 = function(x) switch(x, "entailment" = 0, "contradiction" = 1)
+fun2 = function(x) switch(x, "현재" = 0, "과거" = 1, "미래" = 2)
+fun3 = function(x) switch(x, "n" = 0, "y" = 1)
+fun4 = function(x) switch(x, "없음" = 0, "양태" = 1, "의문" = 2, "조건" = 3, "부정" = 4, "2개" = 5)
+fun5 = function(x) switch(x, "1" = 1, "2" = 2, "3" = 0, "4" = 3)
+
+
+```
+
+
+
+
+```{r}
+# Convert transformed columns to factors where appropriate
+data$entailment = sapply(data$entailment, fun1)
+data$Inner_Tense = factor(sapply(data$Inner_Tense, fun2))
+data$Mat_Tense = factor(sapply(data$Mat_Tense, fun2))
+data$Subject_Equal = factor(sapply(data$Subject_Equal, fun3))
+data$eco = factor(sapply(data$eco, fun4))
+data$Mat_Person = factor(sapply(data$Mat_Person, fun5))
+data$Inner_Person = factor(sapply(data$Inner_Person, fun5))
+
+```
+
+```{r}
+# Inspect the structure of the transformed data
+str(data)
+
+```
+
+# Model Fitting
+
+```{r}
+# Fit a logistic regression model with all variables
+mlogit <- glm(entailment ~., family = binomial, data=data)
+summary(mlogit)
+
+# Display the model summary in a table format with rounded digits
+ztable(mlogit, digit=3, size=7)
+```
+
+# Model Optimization
+
+```{r}
+# Perform stepwise model selection to optimize the model
+reducedmodel <- step(mlogit, direction = "both")
+summary(reducedmodel)
+
+# Display the summary of the reduced model
+ztable(reducedmodel, digit=3, size=7)
+
+```
+
+
+# Multicollinearity Check
+
+```{r}
+# Check for multicollinearity using the Variance Inflation Factor (VIF)
+library(xtable)
+library(car)
+xtable(vif(mlogit))
+varImp(mlogit)
+```
+
+# Hosmer & Lemeshow Test
+
+```{r}
+# Hosmer & Lemeshow goodness-of-fit test to evaluate the model
+
+HLTest = function(obj, g) {
+
+  # Ensure that the input is a binomial logit model
+
+  stopifnot(family(obj)$family == "binomial" && family(obj)$link == "logit")
+
+  y = obj$model[[1]]
+
+  trials = rep(1, times = nrow(obj$model))
+
+  if(any(colnames(obj$model) == "(weights)")) 
+
+    trials <- obj$model[[ncol(obj$model)]]
+
+  # the double bracket (above) gets the index of items within an object
+
+  if (is.factor(y)) 
+
+    y = as.numeric(y) == 2  # Converts 1-2 factor levels to logical 0/1 values
+
+  yhat = obj$fitted.values 
+
+  interval = cut(yhat, quantile(yhat, 0:g/g), include.lowest = TRUE)  # Creates factor with levels 1,2,...,g
+
+  Y1 <- trials*y
+
+  Y0 <- trials - Y1
+
+  Y1hat <- trials*yhat
+
+  Y0hat <- trials - Y1hat
+
+  obs = xtabs(formula = cbind(Y0, Y1) ~ interval)
+
+  expect = xtabs(formula = cbind(Y0hat, Y1hat) ~ interval)
+
+  if (any(expect < 5))
+
+    warning("Some expected counts are less than 5. Use smaller number of groups")
+
+  pear <- (obs - expect)/sqrt(expect)
+
+  chisq = sum(pear^2)
+
+  P = 1 - pchisq(chisq, g - 2)
+
+  # by returning an object of class "htest", the function will perform like the 
+
+  # built-in hypothesis tests
+
+  return(structure(list(
+
+    method = c(paste("Hosmer and Lemeshow goodness-of-fit test", sep = " ")),
+
+    data.name = deparse(substitute(obj)),
+
+    statistic = c(X2 = chisq),
+
+    parameter = c(df = g-2),
+
+    p.value = P,
+
+    pear.resid = pear,
+
+    expect = expect,
+
+    observed = obs
+
+  ), class = 'htest'))
+}
+```
+
+```{r}
+# Apply Hosmer & Lemeshow test on the reduced model
+HLTest(reducedmodel, g = 6)
+```
+
+# Wald Test
+
+```{r}
+# Perform a Wald test on the model
+library(lmtest)
+waldtest(mlogit, terms= "Mat_Person")
+
+```
+
+# Odds Ratios
+
+```{r}
+# Extract and display the odds ratios from the reduced model
+xtable(data.frame(extractOR(reducedmodel)))
+
+```
+
+```{r}
+# Plot the odds ratios for visual inspection
+ORplot(reducedmodel, type = 2, show.OR = TRUE, cex = 2)
+```
+
+# Model Performance Metrics
+
+```{r}
+# Calculate pseudo R-squared values for the reduced model
+library(pscl)
+pR2(reducedmodel)
+
+```
+
+# Data Summary
+
+```{r}
+# Summarize counts for each categorical variable
+
+# Define the list of columns to summarize
+columns_to_summarize <- c("entailment", "eco", "Subject_Equal", "Mat_Tense", "Mat_Person", "Inner_Tense", "Inner_Person")
+
+# Iterate through each column, group by the column, and summarize the counts
+summary_list <- lapply(columns_to_summarize, function(col) {
+  data %>% group_by(across(all_of(col))) %>% summarise(count = n())
+})
+
+# Print the summaries
+summary_list
+
+
+```
